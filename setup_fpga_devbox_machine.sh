@@ -9,7 +9,11 @@ INSTALL_CONFIG_PATH="$HOME/install_config.txt"
 usage() {
   cat <<USAGE
 Usage:
-  $(basename "$0") /path/in/linux/to/Xilinx_Unified_2025.2_*.bin|*.tar.gz
+  $(basename "$0") /absolute/path/to/Xilinx_Unified_2025.2_*.bin|*.tar.gz
+
+The path must be absolute on macOS. OrbStack exposes it inside Linux at the same
+location (for example /Users/you/Downloads/installer.bin), and this script copies
+it into the VM before installation.
 
 Environment overrides:
   VITIS_VER=2025.2
@@ -20,6 +24,8 @@ USAGE
 [[ -n "$INSTALLER_PATH" ]] || { usage; exit 1; }
 [[ -e "$INSTALLER_PATH" ]] || { echo "Installer not found in machine: $INSTALLER_PATH" >&2; exit 1; }
 
+SOURCE_INSTALLER="$INSTALLER_PATH"
+
 sudo apt-get update
 sudo apt-get upgrade -y
 sudo apt-get install -y \
@@ -28,7 +34,7 @@ sudo apt-get install -y \
   libglib2.0-0 libsm6 libxi6 libxrender1 libxrandr2 \
   libfreetype6 libfontconfig1 libxext6 libxtst6 libx11-6 \
   libgtk2.0-0 libxcb1 libxcb-util1 \
-  libtinfo5 libncurses5 python3 python3-pip locales lsb-release usbutils \
+  libncurses6 libtinfo6 python3 python3-pip locales lsb-release usbutils \
   verilator iverilog
 
 sudo locale-gen en_US.UTF-8
@@ -78,6 +84,14 @@ WORKDIR="$HOME/xilinx-installer"
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR"
 
+INSTALLER_BASENAME="$(basename "$SOURCE_INSTALLER")"
+INSTALLER_PATH="$WORKDIR/$INSTALLER_BASENAME"
+if [[ "$SOURCE_INSTALLER" != "$INSTALLER_PATH" ]]; then
+  echo "Copying installer from $SOURCE_INSTALLER to $INSTALLER_PATH"
+  cp -f "$SOURCE_INSTALLER" "$INSTALLER_PATH"
+fi
+chmod +r "$INSTALLER_PATH"
+
 case "$INSTALLER_PATH" in
   *.tar.gz)
     tar -xzf "$INSTALLER_PATH" -C "$WORKDIR"
@@ -105,28 +119,28 @@ fi
 
 "$SETUP_BIN" --agree XilinxEULA,3rdPartyEULA --batch Install --config "$INSTALL_CONFIG_PATH"
 
-if ! grep -q "/tools/Xilinx/Vitis/$VITIS_VER/settings64.sh" "$HOME/.bashrc"; then
-  echo "source /tools/Xilinx/Vitis/$VITIS_VER/settings64.sh 2>/dev/null || true" >> "$HOME/.bashrc"
+if ! grep -q "$INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh" "$HOME/.bashrc"; then
+  echo "source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh 2>/dev/null || true" >> "$HOME/.bashrc"
 fi
 
 mkdir -p "$HOME/bin"
-cat > "$HOME/bin/start-vivado-gui" <<'SH'
+cat > "$HOME/bin/start-vivado-gui" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
-source /tools/Xilinx/Vitis/2025.2/settings64.sh
-cd "${1:-$HOME}"
+source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh
+cd "\${1:-\$HOME}"
 nohup vivado >/tmp/vivado-gui.log 2>&1 &
 SH
 chmod +x "$HOME/bin/start-vivado-gui"
 
-cat > "$HOME/bin/start-vitis-gui" <<'SH'
+cat > "$HOME/bin/start-vitis-gui" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
-source /tools/Xilinx/Vitis/2025.2/settings64.sh
-WORKDIR="${1:-$HOME/vitis-workspace}"
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
-nohup vitis -w "$WORKDIR" >/tmp/vitis-gui.log 2>&1 &
+source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh
+WORKDIR="\${1:-\$HOME/vitis-workspace}"
+mkdir -p "\$WORKDIR"
+cd "\$WORKDIR"
+nohup vitis -w "\$WORKDIR" >/tmp/vitis-gui.log 2>&1 &
 SH
 chmod +x "$HOME/bin/start-vitis-gui"
 

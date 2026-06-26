@@ -7,9 +7,17 @@ MACHINE="${2:-$MACHINE_DEFAULT}"
 ARG3="${3:-}"
 RDP_PORT="${RDP_PORT:-3389}"
 VITIS_VER="${VITIS_VER:-2025.2}"
+INSTALL_ROOT="${INSTALL_ROOT:-/tools/Xilinx}"
 HOSTNAME="${MACHINE}.orb.local"
 RDP_FILE="$HOME/.orbstack-${MACHINE}.rdp"
-MAC_RDP_APP="/Applications/Microsoft Remote Desktop.app"
+
+detect_rdp_app() {
+  if [[ -d "/Applications/Windows App.app" ]]; then
+    echo "/Applications/Windows App.app"
+  elif [[ -d "/Applications/Microsoft Remote Desktop.app" ]]; then
+    echo "/Applications/Microsoft Remote Desktop.app"
+  fi
+}
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -38,8 +46,11 @@ USAGE
 }
 
 need_cmd orb
-need_cmd ssh
 need_cmd open
+
+orb_machine() {
+  orbctl run -m "$MACHINE" "$@"
+}
 
 case "$TOOL" in
   desktop|vivado|vitis) ;;
@@ -64,7 +75,7 @@ fi
 echo "Starting machine: $MACHINE"
 orb start "$MACHINE" >/dev/null
 
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$HOSTNAME" "systemctl is-active --quiet xrdp" 2>/dev/null; then
+if ! orb_machine systemctl is-active --quiet xrdp 2>/dev/null; then
   cat <<MSG
 XRDP is not active in '$MACHINE'. Install it once inside the machine:
   sudo apt update
@@ -102,10 +113,11 @@ devicestoredirect:s:*
 drive store redirect:s:*
 RDP
 
-if [[ -d "$MAC_RDP_APP" ]]; then
+MAC_RDP_APP="$(detect_rdp_app || true)"
+if [[ -n "$MAC_RDP_APP" ]]; then
   open -a "$MAC_RDP_APP" "$RDP_FILE"
 else
-  echo "Microsoft Remote Desktop is not installed; connect manually to ${HOSTNAME}:${RDP_PORT}" >&2
+  echo "No RDP client found (Windows App or Microsoft Remote Desktop); connect manually to ${HOSTNAME}:${RDP_PORT}" >&2
 fi
 
 sleep 2
@@ -116,12 +128,12 @@ case "$TOOL" in
     ;;
   vivado)
     WORKDIR="${ARG3:-$HOME}"
-    ssh "$HOSTNAME" "bash -lc 'mkdir -p \"$WORKDIR\" && source /tools/Xilinx/Vitis/$VITIS_VER/settings64.sh && cd \"$WORKDIR\" && nohup vivado >/tmp/vivado-gui.log 2>&1 &'"
+    orb_machine bash -lc "mkdir -p \"$WORKDIR\" && source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh && cd \"$WORKDIR\" && nohup vivado >/tmp/vivado-gui.log 2>&1 &"
     echo "Vivado launch requested in $MACHINE at $WORKDIR"
     ;;
   vitis)
     WORKDIR="${ARG3:-$HOME/vitis-workspace}"
-    ssh "$HOSTNAME" "bash -lc 'mkdir -p \"$WORKDIR\" && source /tools/Xilinx/Vitis/$VITIS_VER/settings64.sh && cd \"$WORKDIR\" && nohup vitis -w \"$WORKDIR\" >/tmp/vitis-gui.log 2>&1 &'"
+    orb_machine bash -lc "mkdir -p \"$WORKDIR\" && source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh && cd \"$WORKDIR\" && nohup vitis -w \"$WORKDIR\" >/tmp/vitis-gui.log 2>&1 &"
     echo "Vitis launch requested in $MACHINE with workspace $WORKDIR"
     ;;
 esac

@@ -13,6 +13,10 @@ need_cmd() {
   }
 }
 
+orb_machine() {
+  orbctl run -m "$MACHINE" "$@"
+}
+
 usage() {
   cat <<USAGE
 Usage:
@@ -27,11 +31,11 @@ USAGE
 
 [[ -n "$INSTALLER_PATH" ]] || { usage; exit 1; }
 [[ -e "$INSTALLER_PATH" ]] || { echo "Installer not found: $INSTALLER_PATH" >&2; exit 1; }
+[[ "$INSTALLER_PATH" == /* ]] || { echo "Installer path must be absolute: $INSTALLER_PATH" >&2; exit 1; }
+INSTALLER_PATH="$(cd "$(dirname "$INSTALLER_PATH")" && pwd)/$(basename "$INSTALLER_PATH")"
 [[ -f "$MACHINE_SETUP_LOCAL" ]] || { echo "Machine setup script not found: $MACHINE_SETUP_LOCAL" >&2; exit 1; }
 
 need_cmd brew
-need_cmd ssh
-need_cmd scp
 need_cmd osascript
 
 brew list --cask orbstack >/dev/null 2>&1 || brew install --cask orbstack
@@ -62,7 +66,7 @@ fi
 
 orb start >/dev/null 2>&1 || true
 
-if ! orb list | awk 'NR>1 {print $1}' | grep -qx "$MACHINE"; then
+if ! orb list | awk '{print $1}' | grep -qx "$MACHINE"; then
   echo "Creating OrbStack machine $MACHINE from $DISTRO"
   orb create "$DISTRO" "$MACHINE"
 fi
@@ -70,39 +74,32 @@ fi
 orb start "$MACHINE" >/dev/null
 
 for _ in $(seq 1 60); do
-  if orb shell "$MACHINE" 'echo ok' >/dev/null 2>&1; then
+  if orb_machine echo ok >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
 
-if ! orb shell "$MACHINE" 'echo ok' >/dev/null 2>&1; then
-  echo "Machine $MACHINE was created but is not responding to orb shell yet." >&2
+if ! orb_machine echo ok >/dev/null 2>&1; then
+  echo "Machine $MACHINE was created but is not responding to orbctl run yet." >&2
   exit 1
 fi
 
-MAC_INSTALLER_DIR="$HOME/XilinxInstall"
-mkdir -p "$MAC_INSTALLER_DIR"
-INSTALLER_BASENAME="$(basename "$INSTALLER_PATH")"
-TARGET_INSTALLER="$MAC_INSTALLER_DIR/$INSTALLER_BASENAME"
-if [[ "$INSTALLER_PATH" != "$TARGET_INSTALLER" ]]; then
-  cp -f "$INSTALLER_PATH" "$TARGET_INSTALLER"
+if ! orbctl push -m "$MACHINE" "$MACHINE_SETUP_LOCAL" setup_fpga_devbox_machine.sh 2>/dev/null; then
+  orb_machine cp "$MACHINE_SETUP_LOCAL" ~/setup_fpga_devbox_machine.sh
 fi
-chmod +r "$TARGET_INSTALLER"
-
-MACHINE_SETUP_BASENAME="$(basename "$MACHINE_SETUP_LOCAL")"
-orb push "$MACHINE_SETUP_LOCAL" "$MACHINE:~/setup_fpga_devbox_machine.sh"
-orb shell "$MACHINE" 'chmod +x ~/setup_fpga_devbox_machine.sh'
+orb_machine chmod +x ~/setup_fpga_devbox_machine.sh
 
 cat <<MSG
 Host setup complete.
 
 Machine: $MACHINE
-Installer staged on host: $TARGET_INSTALLER
+Installer on host: $INSTALLER_PATH
 Machine setup script uploaded as: ~/setup_fpga_devbox_machine.sh
 
 Next step:
-  orb shell $MACHINE '~/setup_fpga_devbox_machine.sh $TARGET_INSTALLER'
+  orbctl run -m $MACHINE ~/setup_fpga_devbox_machine.sh '$INSTALLER_PATH'
 
+The guest script copies the installer from that macOS path into the VM before installing.
 After machine setup finishes, use fpga_devbox.sh from macOS to open the desktop or launch Vivado/Vitis.
 MSG
