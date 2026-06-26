@@ -30,12 +30,14 @@ USAGE
 [[ -f "$MACHINE_SETUP_LOCAL" ]] || { echo "Machine setup script not found: $MACHINE_SETUP_LOCAL" >&2; exit 1; }
 
 need_cmd brew
-need_cmd orb
 need_cmd ssh
 need_cmd scp
 
 brew list --cask orbstack >/dev/null 2>&1 || brew install --cask orbstack
 brew list --cask microsoft-remote-desktop >/dev/null 2>&1 || brew install --cask microsoft-remote-desktop
+
+hash -r
+need_cmd orb
 
 orb start >/dev/null 2>&1 || true
 
