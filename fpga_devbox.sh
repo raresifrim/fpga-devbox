@@ -52,6 +52,10 @@ orb_machine() {
   orbctl run -m "$MACHINE" "$@"
 }
 
+machine_arch() {
+  orbctl info "$MACHINE" 2>/dev/null | awk -F': ' '/^Architecture:/ {print $2; exit}'
+}
+
 case "$TOOL" in
   desktop|vivado|vitis) ;;
   -h|--help|help) usage; exit 0 ;;
@@ -68,7 +72,19 @@ if ! orb list >/dev/null 2>&1; then
 fi
 
 if ! orb list | awk '{print $1}' | grep -qx "$MACHINE"; then
-  echo "Machine '$MACHINE' not found. Create it first with: orb create ubuntu $MACHINE" >&2
+  echo "Machine '$MACHINE' not found. Create it first with setup_fpga_devbox_host.sh" >&2
+  exit 1
+fi
+
+CURRENT_ARCH="$(machine_arch)"
+if [[ -n "$CURRENT_ARCH" && "$CURRENT_ARCH" != "amd64" ]]; then
+  cat <<MSG >&2
+Machine '$MACHINE' is $CURRENT_ARCH, but Vivado/Vitis require amd64 (x86_64).
+
+Recreate the machine with the host setup script:
+  orbctl delete $MACHINE
+  ./setup_fpga_devbox_host.sh /absolute/path/to/installer.bin
+MSG
   exit 1
 fi
 

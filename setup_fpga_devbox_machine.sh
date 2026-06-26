@@ -10,6 +10,7 @@ usage() {
   cat <<USAGE
 Usage:
   $(basename "$0") /absolute/path/to/Xilinx_Unified_2025.2_*.bin|*.tar.gz
+  $(basename "$0") /absolute/path/to/FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_*.bin
 
 The path must be absolute on macOS. OrbStack exposes it inside Linux at the same
 location (for example /Users/you/Downloads/installer.bin), and this script copies
@@ -23,6 +24,18 @@ USAGE
 
 [[ -n "$INSTALLER_PATH" ]] || { usage; exit 1; }
 [[ -e "$INSTALLER_PATH" ]] || { echo "Installer not found in machine: $INSTALLER_PATH" >&2; exit 1; }
+
+LINUX_ARCH="$(uname -m)"
+if [[ "$LINUX_ARCH" != "x86_64" ]]; then
+  cat <<MSG >&2
+This machine reports architecture '$LINUX_ARCH', but Vivado/Vitis require x86_64 (amd64).
+
+On Apple Silicon, recreate the OrbStack machine with Rosetta-backed x86 emulation:
+  orbctl delete <machine-name>
+  ./setup_fpga_devbox_host.sh /absolute/path/to/installer.bin
+MSG
+  exit 1
+fi
 
 SOURCE_INSTALLER="$INSTALLER_PATH"
 
@@ -69,7 +82,7 @@ cat > "$INSTALL_CONFIG_PATH" <<CFG
 Edition=Vitis Unified Software Platform
 Product=Vitis
 Destination=$INSTALL_ROOT
-Modules=Zynq-7000:1,Zynq UltraScale+ MPSoC:1,Kintex UltraScale+:1,Artix UltraScale+:1,Kintex-7:1,Artix-7:1,Spartan-7:1,Virtex UltraScale+:0,Versal AI Core Series:0,DocNav:0,Vitis Model Composer:0,Install Devices for Kria SOMs and Starter Kits:0,Vitis IP Cache (Enable faster on-boarding for new users):0,Engineering Sample Devices for Custom Platforms:0
+Modules=Zynq-7000:1,Zynq UltraScale+ MPSoC:1,Kintex UltraScale+:1,Artix UltraScale+:1,Kintex-7:1,Artix-7:1,Spartan-7:1,Virtex UltraScale+:1,Versal AI Core Series:0,DocNav:0,Vitis Model Composer:0,Install Devices for Kria SOMs and Starter Kits:0,Vitis IP Cache (Enable faster on-boarding for new users):0,Engineering Sample Devices for Custom Platforms:0
 InstallOptions=Acquire or Manage a License Key:0,Enable WebTalk for SDK to send usage statistics to Xilinx:0
 Perform System Checks:1
 Install Cable Drivers:1
@@ -92,15 +105,27 @@ if [[ "$SOURCE_INSTALLER" != "$INSTALLER_PATH" ]]; then
 fi
 chmod +r "$INSTALLER_PATH"
 
+locate_xsetup() {
+  local root="$1"
+  if [[ -x "$root/xsetup" ]]; then
+    echo "$root/xsetup"
+    return 0
+  fi
+  find "$root" -maxdepth 4 -type f -name xsetup -perm -111 2>/dev/null | head -n1
+}
+
+EXTRACT_DIR="$WORKDIR/extracted"
+mkdir -p "$EXTRACT_DIR"
+
 case "$INSTALLER_PATH" in
   *.tar.gz)
-    tar -xzf "$INSTALLER_PATH" -C "$WORKDIR"
-    INSTALL_DIR="$(find "$WORKDIR" -maxdepth 1 -type d -name 'Xilinx_Unified_*' | head -n1)"
+    echo "Extracting $(basename "$INSTALLER_PATH")..."
+    tar -xzf "$INSTALLER_PATH" -C "$EXTRACT_DIR"
     ;;
   *.bin)
-    cp "$INSTALLER_PATH" "$WORKDIR/installer.bin"
-    chmod +x "$WORKDIR/installer.bin"
-    INSTALL_DIR="$WORKDIR"
+    echo "Extracting installer payload from $(basename "$INSTALLER_PATH")..."
+    chmod +x "$INSTALLER_PATH"
+    "$INSTALLER_PATH" --keep --noexec --target "$EXTRACT_DIR"
     ;;
   *)
     echo "Unsupported installer format: $INSTALLER_PATH" >&2
@@ -108,15 +133,15 @@ case "$INSTALLER_PATH" in
     ;;
 esac
 
-if [[ -x "$INSTALL_DIR/xsetup" ]]; then
-  SETUP_BIN="$INSTALL_DIR/xsetup"
-elif [[ -x "$WORKDIR/installer.bin" ]]; then
-  SETUP_BIN="$WORKDIR/installer.bin"
-else
-  echo "Could not locate xsetup/installer executable" >&2
+SETUP_BIN="$(locate_xsetup "$EXTRACT_DIR")"
+if [[ -z "$SETUP_BIN" ]]; then
+  echo "Could not locate xsetup after extracting the installer." >&2
+  echo "Contents of $EXTRACT_DIR:" >&2
+  ls -la "$EXTRACT_DIR" >&2 || true
   exit 1
 fi
 
+echo "Running batch install with $SETUP_BIN"
 "$SETUP_BIN" --agree XilinxEULA,3rdPartyEULA --batch Install --config "$INSTALL_CONFIG_PATH"
 
 if ! grep -q "$INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh" "$HOME/.bashrc"; then

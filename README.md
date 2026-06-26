@@ -26,7 +26,10 @@ Before using the scripts, make sure the following are already true:
 
 - macOS host with **Homebrew** installed.
 - **OrbStack** can be installed on the host, or will be installed by the host setup script.
-- The **AMD/Xilinx Vitis Unified 2025.2 Linux installer** has already been downloaded, either as a `.bin` self-extracting installer or a `.tar.gz` single-file package.
+- On **Apple Silicon**, OrbStack creates an **amd64** Linux machine backed by **Rosetta** so the x86_64 Vivado/Vitis toolchain can run.
+- The **AMD/Xilinx Vitis Unified 2025.2 Linux installer** has already been downloaded. Supported packages include:
+  - `Xilinx_Unified_2025.2_*.bin` or `*.tar.gz`
+  - `FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_*.bin` (single-disk installer)
 - Enough free disk space is available for Vitis/Vivado and device support packages.
 
 ## Scripts
@@ -39,6 +42,8 @@ Responsibilities:
 - Installs OrbStack if missing.
 - Installs Windows App or Microsoft Remote Desktop if missing.
 - Creates an OrbStack Ubuntu machine named `xilinx-dev` by default.
+- On Apple Silicon, creates the machine as **amd64** so OrbStack uses **Rosetta** for x86_64 binaries.
+- Refuses to proceed if an existing machine has the wrong architecture.
 - Starts the machine.
 - Uploads the machine provisioning script into the Linux guest.
 - Prints the `orbctl run` command for guest setup, using the **absolute installer path you passed in**.
@@ -50,7 +55,9 @@ The host script does **not** copy the installer anywhere on macOS. OrbStack shar
 Runs inside the OrbStack Linux machine.
 
 Responsibilities:
+- Verifies the machine is **x86_64** before installing (Vivado/Vitis are not available for arm64 Linux).
 - Copies the installer from the macOS path you provided into `~/xilinx-installer` inside the VM.
+- Extracts the `.bin` or `.tar.gz` payload and runs **`xsetup`** in batch mode (the `.bin` wrapper itself does not accept `--agree` / `--batch`).
 - Installs **XFCE** and **XRDP** for GUI access.
 - Applies the usual XRDP startup environment fix for Ubuntu/XFCE sessions.
 - Installs Linux dependencies required by Vivado/Vitis.
@@ -89,6 +96,12 @@ Pass the **absolute** path to your downloaded Vitis Unified installer:
 
 ```bash
 ./setup_fpga_devbox_host.sh /absolute/path/to/Xilinx_Unified_2025.2_*.bin
+```
+
+or:
+
+```bash
+./setup_fpga_devbox_host.sh /absolute/path/to/FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_*.bin
 ```
 
 or:
@@ -198,6 +211,27 @@ The scripts support a few environment overrides.
 ```bash
 MACHINE=my-fpga-box ./setup_fpga_devbox_host.sh /absolute/path/to/installer.bin
 DISTRO=ubuntu:noble ./setup_fpga_devbox_host.sh /absolute/path/to/installer.bin
+ARCH=amd64 ./setup_fpga_devbox_host.sh /absolute/path/to/installer.bin
+```
+
+`ARCH` defaults to `amd64` on Apple Silicon. On Intel Macs, new machines are also created as `amd64` because Vivado/Vitis require x86_64 Linux.
+
+## Apple Silicon and Rosetta
+
+The AMD/Xilinx Linux toolchain is **x86_64 only**. On Apple Silicon Macs, OrbStack does not run Vivado inside a native arm64 Ubuntu machine; it creates an **amd64** machine and uses **Rosetta** to execute x86_64 Linux binaries with much better performance than QEMU-style emulation.
+
+Machine architecture is fixed when the VM is created. If you already created `xilinx-dev` as arm64, delete and recreate it:
+
+```bash
+orbctl delete xilinx-dev
+./setup_fpga_devbox_host.sh /absolute/path/to/Xilinx_Unified_2025.2_*.bin
+```
+
+Verify the guest architecture before or after setup:
+
+```bash
+orbctl info xilinx-dev | grep Architecture
+orbctl run -m xilinx-dev uname -m    # should print x86_64
 ```
 
 ### Guest-side overrides
@@ -258,6 +292,27 @@ orbctl run -m xilinx-dev ls -lh '/Users/<your-mac-user>/Downloads/Xilinx_Unified
 ```
 
 If that fails, confirm OrbStack file sharing is enabled and the path is absolute on macOS.
+
+### Installer fails with `Unrecognized flag : --agree`
+
+The `.bin` download is a Makeself wrapper, not `xsetup`. The guest script extracts it first:
+
+```bash
+./FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_....bin --keep --noexec --target ~/xilinx-installer/extracted
+./xilinx-installer/extracted/xsetup --agree XilinxEULA,3rdPartyEULA --batch Install --config ~/install_config.txt
+```
+
+If you hit this error on an older checkout, pull the latest `setup_fpga_devbox_machine.sh` and rerun guest setup.
+
+### Wrong machine architecture (arm64 instead of amd64)
+
+If setup or `fpga_devbox.sh` reports an architecture mismatch, the VM was likely created before this requirement was enforced:
+
+```bash
+orbctl info xilinx-dev | grep Architecture
+orbctl delete xilinx-dev
+./setup_fpga_devbox_host.sh /absolute/path/to/Xilinx_Unified_2025.2_*.bin
+```
 
 ## Notes
 

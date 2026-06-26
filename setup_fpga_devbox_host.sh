@@ -5,6 +5,19 @@ MACHINE="${MACHINE:-xilinx-dev}"
 DISTRO="${DISTRO:-ubuntu:noble}"
 INSTALLER_PATH="${1:-}"
 MACHINE_SETUP_LOCAL="${MACHINE_SETUP_LOCAL:-$PWD/setup_fpga_devbox_machine.sh}"
+REQUIRED_ARCH="amd64"
+HOST_CPU="$(uname -m)"
+
+if [[ -z "${ARCH:-}" ]]; then
+  if [[ "$HOST_CPU" == "arm64" ]]; then
+    ARCH="$REQUIRED_ARCH"
+  fi
+fi
+
+if [[ -n "${ARCH:-}" && "$ARCH" != "$REQUIRED_ARCH" ]]; then
+  echo "ARCH must be $REQUIRED_ARCH for Vivado/Vitis (got: $ARCH)" >&2
+  exit 1
+fi
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -17,15 +30,24 @@ orb_machine() {
   orbctl run -m "$MACHINE" "$@"
 }
 
+machine_arch() {
+  orbctl info "$MACHINE" 2>/dev/null | awk -F': ' '/^Architecture:/ {print $2; exit}'
+}
+
 usage() {
   cat <<USAGE
 Usage:
   $(basename "$0") /absolute/path/to/Xilinx_Unified_2025.2_*.bin|*.tar.gz
+  $(basename "$0") /absolute/path/to/FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_*.bin
 
 Environment overrides:
   MACHINE=xilinx-dev
   DISTRO=ubuntu:noble
+  ARCH=amd64
   MACHINE_SETUP_LOCAL=./setup_fpga_devbox_machine.sh
+
+On Apple Silicon Macs, ARCH defaults to amd64 so OrbStack uses Rosetta for the
+x86_64 Vivado/Vitis Linux toolchain. Machine architecture is fixed at creation.
 USAGE
 }
 
@@ -66,9 +88,23 @@ fi
 
 orb start >/dev/null 2>&1 || true
 
-if ! orb list | awk '{print $1}' | grep -qx "$MACHINE"; then
-  echo "Creating OrbStack machine $MACHINE from $DISTRO"
-  orb create "$DISTRO" "$MACHINE"
+TARGET_ARCH="${ARCH:-$REQUIRED_ARCH}"
+
+if orb list | awk '{print $1}' | grep -qx "$MACHINE"; then
+  CURRENT_ARCH="$(machine_arch)"
+  if [[ -n "$CURRENT_ARCH" && "$CURRENT_ARCH" != "$TARGET_ARCH" ]]; then
+    cat <<MSG >&2
+Machine '$MACHINE' exists with architecture $CURRENT_ARCH, but Vivado/Vitis require $TARGET_ARCH.
+
+OrbStack machine architecture is fixed at creation time. Delete and recreate the machine:
+  orbctl delete $MACHINE
+  ./setup_fpga_devbox_host.sh '$INSTALLER_PATH'
+MSG
+    exit 1
+  fi
+else
+  echo "Creating OrbStack machine $MACHINE from $DISTRO (arch: $TARGET_ARCH)"
+  orb create --arch "$TARGET_ARCH" "$DISTRO" "$MACHINE"
 fi
 
 orb start "$MACHINE" >/dev/null
@@ -94,6 +130,7 @@ cat <<MSG
 Host setup complete.
 
 Machine: $MACHINE
+Architecture: $(machine_arch)
 Installer on host: $INSTALLER_PATH
 Machine setup script uploaded as: ~/setup_fpga_devbox_machine.sh
 
