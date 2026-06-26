@@ -32,29 +32,54 @@ USAGE
 need_cmd brew
 need_cmd ssh
 need_cmd scp
+need_cmd osascript
 
 brew list --cask orbstack >/dev/null 2>&1 || brew install --cask orbstack
-brew list --cask microsoft-remote-desktop >/dev/null 2>&1 || brew install --cask microsoft-remote-desktop
+
+if brew info --cask windows-app >/dev/null 2>&1; then
+  brew list --cask windows-app >/dev/null 2>&1 || brew install --cask windows-app
+else
+  brew list --cask microsoft-remote-desktop >/dev/null 2>&1 || brew install --cask microsoft-remote-desktop
+fi
 
 hash -r
 need_cmd orb
 
+# OrbStack CLI may be installed before the app has finished first-launch initialization.
+open -a OrbStack || true
+for _ in $(seq 1 60); do
+  if orb status >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+if ! orb status >/dev/null 2>&1; then
+  echo "OrbStack is installed but not ready yet." >&2
+  echo "Open OrbStack.app once, allow any requested permissions, then rerun this script." >&2
+  exit 1
+fi
+
 orb start >/dev/null 2>&1 || true
 
-if ! orb list | awk '{print $1}' | grep -qx "$MACHINE"; then
+if ! orb list | awk 'NR>1 {print $1}' | grep -qx "$MACHINE"; then
   echo "Creating OrbStack machine $MACHINE from $DISTRO"
   orb create "$DISTRO" "$MACHINE"
 fi
 
 orb start "$MACHINE" >/dev/null
-HOSTNAME="${MACHINE}.orb.local"
 
-for _ in $(seq 1 30); do
-  if ssh -o BatchMode=yes -o ConnectTimeout=3 "$HOSTNAME" 'echo ok' >/dev/null 2>&1; then
+for _ in $(seq 1 60); do
+  if orb shell "$MACHINE" 'echo ok' >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
+
+if ! orb shell "$MACHINE" 'echo ok' >/dev/null 2>&1; then
+  echo "Machine $MACHINE was created but is not responding to orb shell yet." >&2
+  exit 1
+fi
 
 MAC_INSTALLER_DIR="$HOME/XilinxInstall"
 mkdir -p "$MAC_INSTALLER_DIR"
@@ -65,14 +90,19 @@ if [[ "$INSTALLER_PATH" != "$TARGET_INSTALLER" ]]; then
 fi
 chmod +r "$TARGET_INSTALLER"
 
-scp "$MACHINE_SETUP_LOCAL" "$HOSTNAME":~/setup_fpga_devbox_machine.sh
-ssh "$HOSTNAME" 'chmod +x ~/setup_fpga_devbox_machine.sh'
+MACHINE_SETUP_BASENAME="$(basename "$MACHINE_SETUP_LOCAL")"
+orb push "$MACHINE_SETUP_LOCAL" "$MACHINE:~/setup_fpga_devbox_machine.sh"
+orb shell "$MACHINE" 'chmod +x ~/setup_fpga_devbox_machine.sh'
 
 cat <<MSG
 Host setup complete.
 
-Next step:
-  ssh $HOSTNAME '~/setup_fpga_devbox_machine.sh /Users/'"$USER"'/XilinxInstall/'"$INSTALLER_BASENAME"''
+Machine: $MACHINE
+Installer staged on host: $TARGET_INSTALLER
+Machine setup script uploaded as: ~/setup_fpga_devbox_machine.sh
 
-After machine setup finishes, copy fpga_devbox.sh to somewhere in your PATH and use it from macOS.
+Next step:
+  orb shell $MACHINE '~/setup_fpga_devbox_machine.sh $TARGET_INSTALLER'
+
+After machine setup finishes, use fpga_devbox.sh from macOS to open the desktop or launch Vivado/Vitis.
 MSG
