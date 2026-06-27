@@ -559,6 +559,25 @@ else
     --location "$INSTALL_ROOT"
 fi
 
+# Disable WebTalk usage-data collection. Besides the privacy aspect, WebTalk
+# fingerprints the host via FlexLM + libudev (udev_enumerate_scan_devices),
+# which segfaults under OrbStack/Rosetta x86 emulation at the end of synth/impl.
+# config_webtalk is AMD's documented install-preference toggle (UG973); placing
+# it in the tool init scripts runs it on every launch, including the headless
+# vivado child processes spawned by launch_runs, so the transmit path is never
+# reached and the install-level preference is written when the tree is writable.
+for webtalk_init in \
+  "$HOME/.Xilinx/Vivado/Vivado_init.tcl" \
+  "$HOME/.Xilinx/Vitis/Vitis_init.tcl"; do
+  mkdir -p "$(dirname "$webtalk_init")"
+  if ! grep -qs 'config_webtalk -install off' "$webtalk_init"; then
+    printf '%s\n' \
+      '# Added by fpga-devbox: disable WebTalk usage statistics.' \
+      'catch {config_webtalk -install off}' >> "$webtalk_init"
+  fi
+done
+echo "WebTalk disabled via ~/.Xilinx/Vivado/Vivado_init.tcl (and Vitis_init.tcl)."
+
 mkdir -p "$HOME/bin"
 cat > "$HOME/.xilinx-settings.sh" <<SH
 #!/usr/bin/env bash
@@ -580,6 +599,36 @@ for settings in \\
   fi
 done
 (( had_nounset )) && set -u
+
+# --- Auto-preload Rosetta libudev workaround for Xilinx CLI tools ------------
+# The Vivado FlexLM dlopen(RTLD_DEEPBIND) path makes libudev segfault in realloc
+# under Rosetta x86, including headless flows like vivado -mode batch -source.
+# Resolve the real system libs (Ubuntu 24.04) and wrap the Xilinx CLIs so they
+# always run with LD_PRELOAD set, without polluting unrelated commands. Override
+# the list by exporting FPGA_LD_PRELOAD before sourcing this file.
+FPGA_LD_PRELOAD=""
+for _fpga_lib in libudev.so.1 libselinux.so.1 libz.so.1 libgdk-x11-2.0.so.0; do
+  _fpga_path="\$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -maxdepth 1 -name "\$_fpga_lib" -print -quit 2>/dev/null)"
+  [[ -n "\$_fpga_path" ]] && FPGA_LD_PRELOAD="\${FPGA_LD_PRELOAD:+\$FPGA_LD_PRELOAD }\$_fpga_path"
+done
+export FPGA_LD_PRELOAD
+unset _fpga_lib _fpga_path
+if [[ -n "\$FPGA_LD_PRELOAD" ]]; then
+  if type -P vivado >/dev/null 2>&1; then
+    vivado() { LD_PRELOAD="\${LD_PRELOAD:+\$LD_PRELOAD }\$FPGA_LD_PRELOAD" command vivado "\$@"; }
+  fi
+  if type -P vitis >/dev/null 2>&1; then
+    vitis() { LD_PRELOAD="\${LD_PRELOAD:+\$LD_PRELOAD }\$FPGA_LD_PRELOAD" command vitis "\$@"; }
+  fi
+  if type -P xsct >/dev/null 2>&1; then
+    xsct() { LD_PRELOAD="\${LD_PRELOAD:+\$LD_PRELOAD }\$FPGA_LD_PRELOAD" command xsct "\$@"; }
+  fi
+  if type -P vitis_hls >/dev/null 2>&1; then
+    vitis_hls() { LD_PRELOAD="\${LD_PRELOAD:+\$LD_PRELOAD }\$FPGA_LD_PRELOAD" command vitis_hls "\$@"; }
+  fi
+fi
+# ----------------------------------------------------------------------------
+
 (( found ))
 SH
 chmod +x "$HOME/.xilinx-settings.sh"
@@ -681,12 +730,26 @@ cmd=("$tool")
 
 echo "Launching $tool on DISPLAY=$DISPLAY (dbus=${DBUS_SESSION_BUS_ADDRESS:+set}); log: $logfile"
 
+# Preload real system libraries so they bind to glibc's allocator before
+# Vivado's FlexLM dlopen(RTLD_DEEPBIND) runs; otherwise libudev crashes in
+# realloc (udev_enumerate_scan_devices) under Rosetta x86 during synth/impl.
+# This mirrors the vivado-on-silicon-mac approach. Paths target the Ubuntu
+# 24.04 layout; export FPGA_LD_PRELOAD yourself to override the default list.
+if [[ -z "${FPGA_LD_PRELOAD:-}" ]]; then
+  _preload=""
+  for _lib in libudev.so.1 libselinux.so.1 libz.so.1 libgdk-x11-2.0.so.0; do
+    _path="$(find /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu -maxdepth 1 -name "$_lib" -print -quit 2>/dev/null)"
+    [[ -n "$_path" ]] && _preload="${_preload:+$_preload }$_path"
+  done
+  FPGA_LD_PRELOAD="$_preload"
+fi
+
 # Prefer the per-user systemd manager: the tool then runs in its own cgroup,
 # independent of this orbctl-run shell, so it reliably survives once we exit.
 # A plain setsid child launched from orbctl run is flaky (the GUI sometimes
 # never materializes); KillMode=process keeps the GUI alive after the tool's
-# own launcher wrapper forks the IDE and exits. FPGA_LD_PRELOAD (optional, see
-# vivado-on-silicon-mac) can preload libs to work around Rosetta/x86 quirks.
+# own launcher wrapper forks the IDE and exits. LD_PRELOAD set above is passed
+# through so the GUI and its launch_runs child processes all inherit it.
 launched=0
 if command -v systemd-run >/dev/null 2>&1; then
   unit="fpga-${tool}-$(date +%s)-$$"

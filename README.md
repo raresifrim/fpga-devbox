@@ -396,10 +396,10 @@ Verify that the Xilinx settings files exist. AMD installer layouts vary, so the 
 orbctl run -m xilinx-dev bash -lc 'ls /tools/Xilinx/2025.2/{Vivado,Vitis}/settings64.sh /tools/Xilinx/{Vivado,Vitis}/2025.2/settings64.sh 2>/dev/null'
 ```
 
-If a tool starts but crashes or renders incorrectly under Rosetta, try the optional library preload (borrowed from the vivado-on-silicon-mac project). The guest launcher honors `FPGA_LD_PRELOAD`:
+If a tool starts but crashes or renders incorrectly under Rosetta, the launcher already preloads `libudev`/`libselinux`/`libz`/`libgdk-x11` by default (borrowed from the vivado-on-silicon-mac project; see the segfault note below). To override or extend that list, set `FPGA_LD_PRELOAD`:
 
 ```bash
-orbctl run -m xilinx-dev bash -lc 'FPGA_LD_PRELOAD="/lib/x86_64-linux-gnu/libudev.so.1 /lib/x86_64-linux-gnu/libselinux.so.1 /lib/x86_64-linux-gnu/libz.so.1" ~/bin/start-vivado-gui'
+orbctl run -m xilinx-dev bash -lc 'FPGA_LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libudev.so.1 /usr/lib/x86_64-linux-gnu/libselinux.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1" ~/bin/start-vivado-gui'
 ```
 
 If RDP prompts for credentials, use the Linux username printed by `fpga_devbox.sh`. Set or reset its password with:
@@ -407,6 +407,23 @@ If RDP prompts for credentials, use the Linux username printed by `fpga_devbox.s
 ```bash
 orbctl run -m xilinx-dev bash -lc 'sudo passwd "$USER"'
 ```
+
+### Segmentation fault during synthesis/implementation (libudev / WebTalk)
+
+If synth/impl aborts with `An unexpected error has occurred (11) Segmentation fault` and a stack trace through `libudev.so.1(udev_enumerate_scan_devices)` → `libXil_lmgr11.so` → `GetHostInfo`/`WebTalk`, this is the known FlexLM/WebTalk crash under Rosetta x86 emulation: Vivado fingerprints the host via `libudev`, which faults in glibc's allocator under Rosetta.
+
+The devbox addresses this two ways:
+
+1. **`LD_PRELOAD` (primary fix).** The guest launcher resolves `libudev`/`libselinux`/`libz`/`libgdk-x11` (Ubuntu 24.04 layout) and exports them via `LD_PRELOAD` before starting Vivado/Vitis, so the real `libudev` binds to glibc's allocator before FlexLM's `dlopen(RTLD_DEEPBIND)` runs. Because it is exported, the GUI's `launch_runs` child processes inherit it too. This mirrors `vivado-on-silicon-mac`'s `de_start.sh`.
+
+   For **terminal/batch flows** (e.g. `vivado -mode batch -source flow.tcl`, `xsct`, `vitis`, `vitis_hls`), the same preload is applied automatically: `~/.xilinx-settings.sh` (sourced from `~/.bashrc`) resolves the libraries into `FPGA_LD_PRELOAD` and defines thin wrapper functions around those CLIs that run them with `LD_PRELOAD` set. The wrappers are scoped to the Xilinx tools, so unrelated commands (including the OSS CAD Suite) are unaffected. So you can just run `vivado -mode batch -source flow.tcl` directly — no manual preload needed. To opt out or customize, `export FPGA_LD_PRELOAD=...` (or empty) before the helper is sourced.
+2. **WebTalk disabled.** The setup script also writes `catch {config_webtalk -install off}` into `~/.Xilinx/Vivado/Vivado_init.tcl` (and `Vitis_init.tcl`), removing the WebTalk trigger entirely. If you provisioned before this change, re-run guest setup, or add it manually:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'mkdir -p ~/.Xilinx/Vivado && echo "catch {config_webtalk -install off}" >> ~/.Xilinx/Vivado/Vivado_init.tcl'
+```
+
+If a crash with the same `libudev` signature somehow persists, run synthesis/implementation in-process (`synth_design`, `opt_design`, `place_design`, `route_design`, `write_bitstream`) instead of via `launch_runs`.
 
 ### Installer path is not visible inside Linux
 
@@ -485,6 +502,6 @@ The [vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) p
 
 - **Launch from within the session, not injected from outside.** That project auto-starts Vivado as part of the desktop session (`de_start.desktop` → `de_start.sh`), so the GUI inherits a correct `DISPLAY`/D-Bus environment. We mirror this with the opt-in `autostart` subcommand, and for on-demand launches we run the tool in the per-user **systemd** manager (`systemd-run --user`) so it lives in a session-independent cgroup rather than the short-lived `orbctl run` shell. This eliminated the intermittent "the launch command prints success but no window appears" failures.
 - **Importing the full graphical environment.** The key fix for Vitis (Electron/Theia) was importing `DBUS_SESSION_BUS_ADDRESS` (plus `XAUTHORITY`/`XDG_RUNTIME_DIR`), not just `DISPLAY`.
-- **Optional `LD_PRELOAD` shim for Rosetta quirks.** That project preloads `libudev`/`libselinux`/`libz`/`libgdk-x11`. We do not force it (both tools launch fine without it), but the guest launcher honors `FPGA_LD_PRELOAD` if a tool misbehaves under emulation.
+- **`LD_PRELOAD` shim for Rosetta quirks.** That project preloads `libudev`/`libselinux`/`libz`/`libgdk-x11` (in `de_start.sh`) so they bind to glibc's allocator before Vivado's FlexLM `dlopen(RTLD_DEEPBIND)` runs — without it, `libudev` segfaults in `realloc` (`udev_enumerate_scan_devices`) under Rosetta during synth/impl. We do the same: the guest launcher resolves those libraries (Ubuntu 24.04 layout) and exports the `LD_PRELOAD` **by default** so both the GUI and its `launch_runs` child processes inherit it. Override or extend the list via `FPGA_LD_PRELOAD`.
 
 We did **not** adopt its VNC stack (XRDP works well for us) or its XVC-over-USB JTAG forwarding (out of scope here).
