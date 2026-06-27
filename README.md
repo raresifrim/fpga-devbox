@@ -7,7 +7,7 @@ A small set of scripts for provisioning an **OrbStack-based FPGA development VM*
 This repository automates three parts of the workflow:
 
 - Host-side setup on macOS, including OrbStack and an RDP client (Windows App or Microsoft Remote Desktop) if needed.
-- Guest-side setup inside the OrbStack Linux machine, including XRDP, XFCE, Vitis Unified, Vivado dependencies, Verilator, and Icarus Verilog.
+- Guest-side setup inside the OrbStack Linux machine, including XRDP, XFCE, Vitis Unified, Vivado dependencies, and the OSS CAD Suite (Verilator, Icarus Verilog, Yosys, nextpnr, and more).
 - Daily startup through a launcher script that can open the Linux desktop or launch Vivado/Vitis in the machine session.
 
 ## Repository layout
@@ -66,7 +66,8 @@ Responsibilities:
 - Uses `config/vitis_unified_2025.2.install_config` by default when present beside the script (override with `INSTALL_CONFIG`).
 - Removes any stale install config in the VM, copies the active config to `~/install_config.txt`, filters invalid module names, and compiles it for `xsetup`.
 - Applies OrbStack-specific **XRDP** systemd overrides so `xrdp` starts reliably in the container environment.
-- Installs **XFCE**, Linux dependencies, **Verilator**, and **Icarus Verilog**.
+- Installs **XFCE** and Linux dependencies.
+- Installs the **OSS CAD Suite** (yosys, nextpnr, **Verilator**, **Icarus Verilog**, gtkwave, ...) into `~/oss-cad-suite` and sources it from `~/.bashrc`, before the Vitis installation.
 - Adds `settings64.sh` to the login shell environment.
 
 ### `fpga_devbox.sh`
@@ -252,11 +253,11 @@ After setup, the machine is intended to provide:
 
 - `vivado`
 - `vitis`
-- `verilator`
-- `iverilog`
-- `vvp`
 - `xrdp`
 - `xfce4`
+- The full [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) (extracted to `~/oss-cad-suite` and sourced from `~/.bashrc`), which bundles open-source tools such as `yosys`, `nextpnr`, `verilator`, `iverilog`/`vvp`, `gtkwave`, and more.
+
+`verilator` and `iverilog` are no longer installed via `apt`; they come from the OSS CAD Suite. Because the suite is sourced in `~/.bashrc`, its tools are available in interactive shells inside the machine.
 
 ## Configuration
 
@@ -339,7 +340,7 @@ orbctl run -m xilinx-dev systemctl status xrdp --no-pager
 Check that the FPGA tools are visible:
 
 ```bash
-orbctl run -m xilinx-dev bash -lc 'source ~/.xilinx-settings.sh 2>/dev/null || true; which vivado || true; which vitis || true; which verilator; which iverilog; which vvp'
+orbctl run -m xilinx-dev bash -lc 'source ~/.xilinx-settings.sh 2>/dev/null || true; source ~/oss-cad-suite/environment 2>/dev/null || true; which vivado || true; which vitis || true; which verilator; which iverilog; which vvp; which yosys; which nextpnr-ice40 || true'
 ```
 
 ## Why XRDP instead of XQuartz

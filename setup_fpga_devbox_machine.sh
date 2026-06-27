@@ -10,6 +10,9 @@ XRDP_PASSWORD="${XRDP_PASSWORD:-}"
 AUTH_TOKEN_FILE="${XILINX_AUTH_TOKEN_FILE:-$HOME/.Xilinx/wi_authentication_key}"
 FORCE_AUTH_TOKEN_GEN="${FORCE_AUTH_TOKEN_GEN:-0}"
 SKIP_AUTH_TOKEN_GEN="${SKIP_AUTH_TOKEN_GEN:-0}"
+OSS_CAD_SUITE_DIR="${OSS_CAD_SUITE_DIR:-$HOME/oss-cad-suite}"
+OSS_CAD_SUITE_DATE="${OSS_CAD_SUITE_DATE:-}"
+SKIP_OSS_CAD_SUITE="${SKIP_OSS_CAD_SUITE:-0}"
 
 module_name_from_entry() {
   local entry="$1"
@@ -288,6 +291,66 @@ MSG
   echo "AMD auth token ready: $AUTH_TOKEN_FILE"
 }
 
+install_oss_cad_suite() {
+  if [[ "$SKIP_OSS_CAD_SUITE" == 1 ]]; then
+    echo "Skipping OSS CAD Suite install (SKIP_OSS_CAD_SUITE=1)."
+    return 0
+  fi
+
+  echo "Installing OSS CAD Suite (yosys, nextpnr, verilator, iverilog, gtkwave, ...)"
+
+  local download_url=""
+  if [[ -n "$OSS_CAD_SUITE_DATE" ]]; then
+    local tag="$OSS_CAD_SUITE_DATE"
+    local compact="${OSS_CAD_SUITE_DATE//-/}"
+    download_url="https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${tag}/oss-cad-suite-linux-x64-${compact}.tgz"
+  else
+    download_url="$(curl -fsSL https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for asset in data.get("assets", []):
+    name = asset.get("name", "")
+    if "linux-x64" in name and name.endswith(".tgz"):
+        print(asset["browser_download_url"])
+        break
+')"
+  fi
+
+  if [[ -z "$download_url" ]]; then
+    echo "Could not determine OSS CAD Suite linux-x64 download URL." >&2
+    exit 1
+  fi
+
+  echo "Downloading $download_url"
+  local tmp_archive staging
+  tmp_archive="$(mktemp /tmp/oss-cad-suite.XXXXXX.tgz)"
+  curl -fL --retry 3 -o "$tmp_archive" "$download_url"
+
+  staging="$(mktemp -d /tmp/oss-cad-suite-stage.XXXXXX)"
+  tar -xzf "$tmp_archive" -C "$staging"
+  if [[ ! -d "$staging/oss-cad-suite" ]]; then
+    echo "Unexpected OSS CAD Suite archive layout (no top-level oss-cad-suite/)." >&2
+    rm -rf "$staging" "$tmp_archive"
+    exit 1
+  fi
+
+  rm -rf "$OSS_CAD_SUITE_DIR"
+  mkdir -p "$(dirname "$OSS_CAD_SUITE_DIR")"
+  mv "$staging/oss-cad-suite" "$OSS_CAD_SUITE_DIR"
+  rm -rf "$staging" "$tmp_archive"
+
+  if [[ ! -f "$OSS_CAD_SUITE_DIR/environment" ]]; then
+    echo "OSS CAD Suite environment not found at $OSS_CAD_SUITE_DIR after extraction." >&2
+    exit 1
+  fi
+
+  if ! grep -q 'oss-cad-suite/environment' "$HOME/.bashrc" 2>/dev/null; then
+    echo "source \"$OSS_CAD_SUITE_DIR/environment\" 2>/dev/null || true" >> "$HOME/.bashrc"
+  fi
+
+  echo "OSS CAD Suite installed to $OSS_CAD_SUITE_DIR and sourced in ~/.bashrc"
+}
+
 usage() {
   cat <<USAGE
 Usage:
@@ -308,6 +371,9 @@ Environment overrides:
   XILINX_AMD_PASSWORD=secret   # optional; used with expect for AuthTokenGen
   SKIP_AUTH_TOKEN_GEN=1          # for full offline .tar.gz installers
   FORCE_AUTH_TOKEN_GEN=1         # regenerate token even if one exists
+  OSS_CAD_SUITE_DIR=\$HOME/oss-cad-suite # where OSS CAD Suite is installed
+  OSS_CAD_SUITE_DATE=YYYY-MM-DD  # pin a specific OSS CAD Suite release
+  SKIP_OSS_CAD_SUITE=1           # skip installing OSS CAD Suite
 USAGE
 }
 
@@ -337,7 +403,7 @@ sudo apt-get install -y \
   libfreetype6 libfontconfig1 libxext6 libxtst6 libx11-6 \
   libgtk2.0-0 libxcb1 libxcb-util1 \
   libncurses6 libtinfo6 python3 python3-pip locales lsb-release usbutils \
-  verilator iverilog expect
+  expect
 
 sudo locale-gen en_US.UTF-8
 
@@ -469,6 +535,8 @@ if [[ -z "$INSTALL_CONFIG" && -f "$DEFAULT_INSTALL_CONFIG" ]]; then
   INSTALL_CONFIG="$DEFAULT_INSTALL_CONFIG"
   echo "Using default install config: $INSTALL_CONFIG"
 fi
+
+install_oss_cad_suite
 
 ensure_amd_auth_token "$SETUP_BIN"
 
