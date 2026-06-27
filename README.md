@@ -78,7 +78,17 @@ Responsibilities:
 - Verifies that XRDP is active.
 - Opens the Linux desktop session via Windows App or Microsoft Remote Desktop.
 - Verifies the machine is **amd64** / **x86_64** before launching tools.
-- Optionally starts **Vivado** or **Vitis** in the Linux environment.
+- Refreshes the guest-side launcher scripts (`~/bin/fpga-launch-gui`, `~/bin/start-vivado-gui`, `~/bin/start-vitis-gui`) on every run, so existing machines pick up fixes without re-running full setup.
+- Optionally starts **Vivado** or **Vitis** by calling those guest scripts (the launch logic lives in the VM, not inline in the host script).
+- Can install/remove an **autostart** entry so a tool launches automatically on RDP login.
+
+#### How GUI launch works
+
+The host script never runs `vivado`/`vitis` directly. It invokes the guest helper `~/bin/start-<tool>-gui`, which:
+
+1. Sources `~/.xilinx-settings.sh` (with `nounset` toggled off, since AMD's `settings64.sh` references unset variables).
+2. Discovers the active XRDP desktop session environment and imports `DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`, and `XDG_RUNTIME_DIR`. It deliberately prefers a desktop process (for example `xfce4-session`) that exposes the **session D-Bus**, because the Electron-based Vitis IDE will not start without `DBUS_SESSION_BUS_ADDRESS`.
+3. Launches the tool through the per-user **systemd manager** (`systemd-run --user -p KillMode=process`), so the GUI runs in its own cgroup, independent of the transient `orbctl run` shell, and reliably survives after the launcher returns. If `systemd-run` is unavailable it falls back to a detached `setsid` launch.
 
 ## Quick start
 
@@ -165,7 +175,15 @@ or:
 ./fpga_devbox.sh desktop
 ```
 
-This starts the OrbStack machine, checks XRDP, and opens the Linux desktop via Windows App or Microsoft Remote Desktop.
+This starts OrbStack and the machine, waits for XRDP and the RDP TCP port to be reachable, writes an `.rdp` file, and opens the Linux desktop via Windows App or Microsoft Remote Desktop. On a cold macOS startup this can take a minute or two.
+
+The launcher pre-fills the Linux username in the RDP file. If you have not set a Linux password for that user yet, set one once:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'sudo passwd "$USER"'
+```
+
+Use that password when Windows App / Microsoft Remote Desktop prompts you.
 
 ### Open the desktop and start Vivado
 
@@ -173,10 +191,12 @@ This starts the OrbStack machine, checks XRDP, and opens the Linux desktop via W
 ./fpga_devbox.sh vivado
 ```
 
+The script opens the RDP desktop first, then the guest helper waits for an active XRDP login session. **You must be logged into the RDP desktop** for the GUI to appear, because the tool is launched into that session's environment. If the desktop was not already logged in, log in when Windows App / Microsoft Remote Desktop opens; the helper then starts Vivado in your session. Tune the wait with `GUI_SESSION_TIMEOUT=300` if needed.
+
 To pass a machine name and a working directory:
 
 ```bash
-./fpga_devbox.sh vivado xilinx-dev /Users/<your-mac-user>/fpga-projects/mydesign
+./fpga_devbox.sh vivado xilinx-dev /home/<linux-user>/fpga-projects/mydesign
 ```
 
 ### Open the desktop and start Vitis
@@ -185,11 +205,26 @@ To pass a machine name and a working directory:
 ./fpga_devbox.sh vitis
 ```
 
+Vitis uses the same flow. Vitis is an Electron/Theia application and needs the session D-Bus, which the guest helper imports automatically.
+
 To pass a machine name and a workspace directory:
 
 ```bash
-./fpga_devbox.sh vitis xilinx-dev /Users/<your-mac-user>/fpga-projects/mydesign/.vitis-workspace
+./fpga_devbox.sh vitis xilinx-dev /home/<linux-user>/vitis-workspace
 ```
+
+### Auto-launch a tool on every RDP login
+
+Inspired by the [vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) project, which starts Vivado as part of its desktop session, you can have a tool launch automatically whenever you log into the RDP desktop. This is the most reliable model, because the tool starts as a native child of the desktop session:
+
+```bash
+./fpga_devbox.sh autostart vivado   # auto-launch Vivado on every RDP login
+./fpga_devbox.sh autostart vitis    # auto-launch Vitis on every RDP login
+./fpga_devbox.sh autostart status   # show what is configured
+./fpga_devbox.sh autostart off      # disable auto-launch
+```
+
+This writes an XFCE autostart entry (`~/.config/autostart/fpga-devbox-<tool>.desktop`) in the VM that runs the same guest launcher. On-demand `./fpga_devbox.sh vivado|vitis` still works independently.
 
 ## Typical workflow
 
@@ -274,6 +309,7 @@ Other overrides:
 ```bash
 orbctl run -m xilinx-dev bash -lc 'INSTALL_ROOT=/tools/Xilinx /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
 orbctl run -m xilinx-dev bash -lc 'VITIS_VER=2025.2 /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
+orbctl run -m xilinx-dev bash -lc 'XRDP_PASSWORD=choose-a-password /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
 orbctl run -m xilinx-dev bash -lc 'XILINX_AMD_EMAIL=you@example.com XILINX_AMD_PASSWORD=secret /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
 orbctl run -m xilinx-dev bash -lc 'FORCE_AUTH_TOKEN_GEN=1 /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
 ```
@@ -303,7 +339,7 @@ orbctl run -m xilinx-dev systemctl status xrdp --no-pager
 Check that the FPGA tools are visible:
 
 ```bash
-orbctl run -m xilinx-dev bash -lc 'which vivado || true; which vitis || true; which verilator; which iverilog; which vvp'
+orbctl run -m xilinx-dev bash -lc 'source ~/.xilinx-settings.sh 2>/dev/null || true; which vivado || true; which vitis || true; which verilator; which iverilog; which vvp'
 ```
 
 ## Why XRDP instead of XQuartz
@@ -315,6 +351,12 @@ For Vivado and Vitis, XRDP is generally the better fit because it gives a comple
 ### XRDP is not active
 
 On OrbStack, the stock `xrdp` systemd units can fail with `dependency job for xrdp.service failed` because PID tracking for `Type=forking` services does not work in the container environment. The guest setup script applies an OrbStack-specific override that runs `xrdp` and `xrdp-sesman` in foreground mode.
+
+The launcher waits for both the service and the TCP port. If your Mac is slow to start OrbStack after reboot, tune the wait windows:
+
+```bash
+START_TIMEOUT=180 XRDP_TIMEOUT=180 ./fpga_devbox.sh
+```
 
 If XRDP still fails, check logs and service state:
 
@@ -331,6 +373,8 @@ orbctl run -m xilinx-dev sudo systemctl restart xrdp-sesman xrdp
 
 ### Vivado or Vitis fails to start
 
+First, make sure you are **logged into the RDP desktop**. The GUI is launched into your active XRDP session, so the helper waits for that session and exits with a message if none appears within `GUI_SESSION_TIMEOUT` seconds.
+
 Check the logs inside the Linux machine:
 
 ```bash
@@ -338,10 +382,29 @@ orbctl run -m xilinx-dev tail -n 100 /tmp/vivado-gui.log
 orbctl run -m xilinx-dev tail -n 100 /tmp/vitis-gui.log
 ```
 
-Verify that the Xilinx settings file exists:
+The tools run as transient per-user systemd services. Inspect them with:
 
 ```bash
-orbctl run -m xilinx-dev ls /tools/Xilinx/Vitis/2025.2/settings64.sh
+orbctl run -m xilinx-dev bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user list-units "fpga-*" --all'
+orbctl run -m xilinx-dev bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); journalctl --user -u "fpga-vitis-*" --no-pager | tail -n 100'
+```
+
+Verify that the Xilinx settings files exist. AMD installer layouts vary, so the setup script writes `~/.xilinx-settings.sh` to source every available Vivado/Vitis settings script:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'ls /tools/Xilinx/2025.2/{Vivado,Vitis}/settings64.sh /tools/Xilinx/{Vivado,Vitis}/2025.2/settings64.sh 2>/dev/null'
+```
+
+If a tool starts but crashes or renders incorrectly under Rosetta, try the optional library preload (borrowed from the vivado-on-silicon-mac project). The guest launcher honors `FPGA_LD_PRELOAD`:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'FPGA_LD_PRELOAD="/lib/x86_64-linux-gnu/libudev.so.1 /lib/x86_64-linux-gnu/libselinux.so.1 /lib/x86_64-linux-gnu/libz.so.1" ~/bin/start-vivado-gui'
+```
+
+If RDP prompts for credentials, use the Linux username printed by `fpga_devbox.sh`. Set or reset its password with:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'sudo passwd "$USER"'
 ```
 
 ### Installer path is not visible inside Linux
@@ -414,3 +477,13 @@ orbctl delete xilinx-dev
 - The setup is designed for **future reuse**, so the scripts are intentionally split into host provisioning, guest provisioning, and daily-launch responsibilities.
 - The Linux guest is meant to behave like a persistent FPGA workstation, not a disposable container.
 - This repository is a practical base for extending the environment with JTAG tools, additional simulators, board support packages, or project-specific shell wrappers.
+
+### Techniques adopted from vivado-on-silicon-mac
+
+The [vivado-on-silicon-mac](https://github.com/ichi4096/vivado-on-silicon-mac) project runs Vivado in an x86 Docker container under Rosetta and exposes it over VNC. We kept our own architecture (OrbStack amd64 VM + XRDP/XFCE), but borrowed three ideas:
+
+- **Launch from within the session, not injected from outside.** That project auto-starts Vivado as part of the desktop session (`de_start.desktop` → `de_start.sh`), so the GUI inherits a correct `DISPLAY`/D-Bus environment. We mirror this with the opt-in `autostart` subcommand, and for on-demand launches we run the tool in the per-user **systemd** manager (`systemd-run --user`) so it lives in a session-independent cgroup rather than the short-lived `orbctl run` shell. This eliminated the intermittent "the launch command prints success but no window appears" failures.
+- **Importing the full graphical environment.** The key fix for Vitis (Electron/Theia) was importing `DBUS_SESSION_BUS_ADDRESS` (plus `XAUTHORITY`/`XDG_RUNTIME_DIR`), not just `DISPLAY`.
+- **Optional `LD_PRELOAD` shim for Rosetta quirks.** That project preloads `libudev`/`libselinux`/`libz`/`libgdk-x11`. We do not force it (both tools launch fine without it), but the guest launcher honors `FPGA_LD_PRELOAD` if a tool misbehaves under emulation.
+
+We did **not** adopt its VNC stack (XRDP works well for us) or its XVC-over-USB JTAG forwarding (out of scope here).
