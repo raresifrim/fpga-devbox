@@ -14,6 +14,8 @@ This repository automates three parts of the workflow:
 
 ```text
 .
+├── config/
+│   └── vitis_unified_2025.2.install_config
 ├── setup_fpga_devbox_host.sh
 ├── setup_fpga_devbox_machine.sh
 ├── fpga_devbox.sh
@@ -58,6 +60,7 @@ Responsibilities:
 - Verifies the machine is **x86_64** before installing (Vivado/Vitis are not available for arm64 Linux).
 - Copies the installer from the macOS path you provided into `~/xilinx-installer` inside the VM.
 - Extracts the `.bin` or `.tar.gz` payload and runs **`xsetup`** in batch mode (the `.bin` wrapper itself does not accept `--agree` / `--batch`).
+- Installs **Vitis Unified** using AMD's default edition modules unless you provide `INSTALL_CONFIG`.
 - Installs **XFCE** and **XRDP** for GUI access.
 - Applies the usual XRDP startup environment fix for Ubuntu/XFCE sessions.
 - Installs Linux dependencies required by Vivado/Vitis.
@@ -236,10 +239,28 @@ orbctl run -m xilinx-dev uname -m    # should print x86_64
 
 ### Guest-side overrides
 
+Editable install config template (all 2025.2 modules, one per line):
+
+`config/vitis_unified_2025.2.install_config`
+
+```bash
+orbctl run -m xilinx-dev env INSTALL_CONFIG=/Users/<your-mac-user>/Projects/fpga-devbox/config/vitis_unified_2025.2.install_config ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/installer.bin'
+```
+
+Other overrides:
+
 ```bash
 orbctl run -m xilinx-dev env VITIS_VER=2025.2 ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/installer.bin'
 orbctl run -m xilinx-dev env INSTALL_ROOT=/tools/Xilinx ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/installer.bin'
 ```
+
+To regenerate the module list from your exact installer release:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'cd ~/xilinx-installer/extracted && ./xsetup -b ConfigGen -c ~/install_config.txt'
+```
+
+Then rerun guest setup with `INSTALL_CONFIG=$HOME/install_config.txt`.
 
 ## Verification
 
@@ -309,10 +330,18 @@ The `.bin` download is a Makeself wrapper, not `xsetup`. The guest script extrac
 
 ```bash
 ./FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_....bin --keep --noexec --target ~/xilinx-installer/extracted
-./xilinx-installer/extracted/xsetup --agree XilinxEULA,3rdPartyEULA --batch Install --config ~/install_config.txt
+./xilinx-installer/extracted/xsetup --agree XilinxEULA,3rdPartyEULA --batch Install --edition "Vitis Unified Software Platform" --location /tools/Xilinx
 ```
 
 If you hit this error on an older checkout, pull the latest `setup_fpga_devbox_machine.sh` and rerun guest setup.
+
+### Installer fails with invalid `Modules` config (for example `Vitis Model Composer`)
+
+Module names change between AMD releases. Do not hand-edit stale `install_config.txt` files. Either rerun guest setup without `INSTALL_CONFIG` so the script uses AMD defaults, or regenerate a config with:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'cd ~/xilinx-installer/extracted && ./xsetup -b ConfigGen -c ~/install_config.txt'
+```
 
 ### Wrong machine architecture (arm64 instead of amd64)
 

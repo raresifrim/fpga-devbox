@@ -3,8 +3,70 @@ set -euo pipefail
 
 INSTALLER_PATH="${1:-}"
 VITIS_VER="${VITIS_VER:-2025.2}"
+VITIS_EDITION="${VITIS_EDITION:-Vitis Unified Software Platform}"
 INSTALL_ROOT="${INSTALL_ROOT:-/tools/Xilinx}"
-INSTALL_CONFIG_PATH="$HOME/install_config.txt"
+INSTALL_CONFIG="${INSTALL_CONFIG:-}"
+
+prepare_install_config() {
+  local src="$1"
+  local dst="$2"
+  local install_root="$3"
+
+  if grep -E '^Modules=.*,' "$src" >/dev/null 2>&1; then
+    cp "$src" "$dst"
+  else
+    local -a header=()
+    local -a modules=()
+    local -a footer=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*# ]] && continue
+      [[ -z "${line//[[:space:]]/}" ]] && continue
+      case "$line" in
+        Edition=*|Product=*|Destination=*)
+          header+=("$line")
+          ;;
+        InstallOptions=*|CreateProgramGroupShortcuts=*|ProgramGroupFolder=*|CreateShortcutsForAllUsers=*|CreateDesktopShortcuts=*|CreateFileAssociation=*|EnableDiskUsageOptimization=*)
+          footer+=("$line")
+          ;;
+        *:0|*:1)
+          modules+=("$line")
+          ;;
+        *)
+          [[ "$line" =~ ^#### ]] && header+=("$line")
+          ;;
+      esac
+    done < "$src"
+
+    if ((${#modules[@]} == 0)); then
+      echo "Install config has no module entries: $src" >&2
+      exit 1
+    fi
+
+    {
+      for line in "${header[@]}"; do
+        if [[ "$line" == Destination=* ]]; then
+          echo "Destination=$install_root"
+        else
+          echo "$line"
+        fi
+      done
+      printf 'Modules='
+      local i
+      for i in "${!modules[@]}"; do
+        ((i)) && printf ','
+        printf '%s' "${modules[$i]}"
+      done
+      printf '\n'
+      for line in "${footer[@]}"; do
+        echo "$line"
+      done
+    } > "$dst"
+  fi
+
+  if ! grep -q '^Destination=' "$dst"; then
+    echo "Destination=$install_root" >> "$dst"
+  fi
+}
 
 usage() {
   cat <<USAGE
@@ -18,7 +80,9 @@ it into the VM before installation.
 
 Environment overrides:
   VITIS_VER=2025.2
+  VITIS_EDITION="Vitis Unified Software Platform"
   INSTALL_ROOT=/tools/Xilinx
+  INSTALL_CONFIG=/path/to/config/vitis_unified_2025.2.install_config
 USAGE
 }
 
@@ -118,21 +182,6 @@ fi
 sudo mkdir -p "$INSTALL_ROOT"
 sudo chown -R "$USER":"$USER" "$INSTALL_ROOT"
 
-cat > "$INSTALL_CONFIG_PATH" <<CFG
-Edition=Vitis Unified Software Platform
-Product=Vitis
-Destination=$INSTALL_ROOT
-Modules=Zynq-7000:1,Zynq UltraScale+ MPSoC:1,Kintex UltraScale+:1,Artix UltraScale+:1,Kintex-7:1,Artix-7:1,Spartan-7:1,Virtex UltraScale+:1,Versal AI Core Series:0,DocNav:0,Vitis Model Composer:0,Install Devices for Kria SOMs and Starter Kits:0,Vitis IP Cache (Enable faster on-boarding for new users):0,Engineering Sample Devices for Custom Platforms:0
-InstallOptions=Acquire or Manage a License Key:0,Enable WebTalk for SDK to send usage statistics to Xilinx:0
-Perform System Checks:1
-Install Cable Drivers:1
-CreateProgramGroupShortcuts=0
-CreateShortcutsForAllUsers=0
-CreateDesktopShortcuts=0
-CreateFileAssociation=0
-EnableDiskUsageOptimization=1
-CFG
-
 WORKDIR="$HOME/xilinx-installer"
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR"
@@ -182,7 +231,19 @@ if [[ -z "$SETUP_BIN" ]]; then
 fi
 
 echo "Running batch install with $SETUP_BIN"
-"$SETUP_BIN" --agree XilinxEULA,3rdPartyEULA --batch Install --config "$INSTALL_CONFIG_PATH"
+if [[ -n "$INSTALL_CONFIG" ]]; then
+  [[ -f "$INSTALL_CONFIG" ]] || { echo "Install config not found: $INSTALL_CONFIG" >&2; exit 1; }
+  COMPILED_INSTALL_CONFIG="$HOME/.xilinx-install-config.compiled.txt"
+  prepare_install_config "$INSTALL_CONFIG" "$COMPILED_INSTALL_CONFIG" "$INSTALL_ROOT"
+  echo "Using install config: $INSTALL_CONFIG (compiled to $COMPILED_INSTALL_CONFIG)"
+  "$SETUP_BIN" --agree XilinxEULA,3rdPartyEULA --batch Install --config "$COMPILED_INSTALL_CONFIG"
+else
+  echo "Using AMD default modules for edition: $VITIS_EDITION"
+  echo "To customize devices/tools, run '$SETUP_BIN -b ConfigGen' and rerun with INSTALL_CONFIG set."
+  "$SETUP_BIN" --agree XilinxEULA,3rdPartyEULA --batch Install \
+    --edition "$VITIS_EDITION" \
+    --location "$INSTALL_ROOT"
+fi
 
 if ! grep -q "$INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh" "$HOME/.bashrc"; then
   echo "source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh 2>/dev/null || true" >> "$HOME/.bashrc"
