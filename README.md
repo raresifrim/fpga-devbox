@@ -31,7 +31,9 @@ Before using the scripts, make sure the following are already true:
 - On **Apple Silicon**, OrbStack creates an **amd64** Linux machine backed by **Rosetta** so the x86_64 Vivado/Vitis toolchain can run.
 - The **AMD/Xilinx Vitis Unified 2025.2 Linux installer** has already been downloaded. Supported packages include:
   - `Xilinx_Unified_2025.2_*.bin` or `*.tar.gz`
-  - `FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_*.bin` (single-disk installer)
+  - `FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_*.bin` (web-installer client; downloads payloads during install)
+- For **`.bin` / SDI** installers: an **AMD account**, **internet access** in the VM, and a one-time **`xsetup -b AuthTokenGen`** step (the guest script handles this when possible).
+- For **full offline `.tar.gz`** installers: no auth token is required (`SKIP_AUTH_TOKEN_GEN=1` is automatic).
 - Enough free disk space is available for Vitis/Vivado and device support packages.
 
 ## Scripts
@@ -60,12 +62,11 @@ Responsibilities:
 - Verifies the machine is **x86_64** before installing (Vivado/Vitis are not available for arm64 Linux).
 - Copies the installer from the macOS path you provided into `~/xilinx-installer` inside the VM.
 - Extracts the `.bin` or `.tar.gz` payload and runs **`xsetup`** in batch mode (the `.bin` wrapper itself does not accept `--agree` / `--batch`).
-- Installs **Vitis Unified** using AMD's default edition modules unless you provide `INSTALL_CONFIG`.
-- Installs **XFCE** and **XRDP** for GUI access.
-- Applies the usual XRDP startup environment fix for Ubuntu/XFCE sessions.
-- Installs Linux dependencies required by Vivado/Vitis.
-- Installs **Verilator** and **Icarus Verilog**.
-- Creates a batch config for **Vitis Unified 2025.2** and launches the installer.
+- For **`.bin` / SDI** installers, ensures an AMD **auth token** exists at `~/.Xilinx/wi_authentication_key` before batch install (interactive `AuthTokenGen`, or `XILINX_AMD_EMAIL` / `XILINX_AMD_PASSWORD`).
+- Uses `config/vitis_unified_2025.2.install_config` by default when present beside the script (override with `INSTALL_CONFIG`).
+- Removes any stale install config in the VM, copies the active config to `~/install_config.txt`, filters invalid module names, and compiles it for `xsetup`.
+- Applies OrbStack-specific **XRDP** systemd overrides so `xrdp` starts reliably in the container environment.
+- Installs **XFCE**, Linux dependencies, **Verilator**, and **Icarus Verilog**.
 - Adds `settings64.sh` to the login shell environment.
 
 ### `fpga_devbox.sh`
@@ -76,6 +77,7 @@ Responsibilities:
 - Starts the OrbStack machine if needed.
 - Verifies that XRDP is active.
 - Opens the Linux desktop session via Windows App or Microsoft Remote Desktop.
+- Verifies the machine is **amd64** / **x86_64** before launching tools.
 - Optionally starts **Vivado** or **Vitis** in the Linux environment.
 
 ## Quick start
@@ -117,19 +119,35 @@ The script will create or start the default OrbStack machine and then print the 
 
 ### 4. Run the guest setup inside the machine
 
-Run the command printed by the host script. It will look similar to this:
+Run from macOS using the repo script path and your installer path. The guest script auto-uses `config/vitis_unified_2025.2.install_config` when `INSTALL_CONFIG` is not set.
 
 ```bash
-orbctl run -m xilinx-dev ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/Xilinx_Unified_2025.2_....bin'
+orbctl run -m xilinx-dev bash -lc '/Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_....bin"'
 ```
 
-or:
+Use the same absolute macOS installer path you passed to the host script. The guest copies the installer and install config into the VM before running `xsetup`.
+
+For **SDI / `.bin`** installers, the guest needs an AMD auth token before download+install. If `orbctl run` is non-interactive, open an interactive shell and run the setup script from there so it can prompt for AMD credentials.
+
+Open an interactive shell in the VM (`orbctl run` has no `-it` flag):
 
 ```bash
-orbctl run -m xilinx-dev ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/Xilinx_Unified_2025.2_....tar.gz'
+orbctl run -m xilinx-dev
 ```
 
-Use the same absolute macOS path you passed to the host script. The guest copies it locally before installing. Depending on installer size and disk speed, this step may take a while.
+Inside that shell:
+
+```bash
+/Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/FPGAs_AdaptiveSoCs_Unified_SDI_2025.2_....bin"
+```
+
+The script extracts the installer, finds the real `xsetup` path, runs `AuthTokenGen`, and then continues the batch install. You can also pass credentials for one-shot automation (token valid ~7 days):
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'XILINX_AMD_EMAIL=you@example.com XILINX_AMD_PASSWORD=secret /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
+```
+
+Depending on installer size, selected modules, and download speed, this step may take a while.
 
 ## Usage
 
@@ -243,15 +261,27 @@ Editable install config template (all 2025.2 modules, one per line):
 
 `config/vitis_unified_2025.2.install_config`
 
+By default the guest script uses that file when it sits beside `setup_fpga_devbox_machine.sh`. To override explicitly:
+
 ```bash
-orbctl run -m xilinx-dev env INSTALL_CONFIG=/Users/<your-mac-user>/Projects/fpga-devbox/config/vitis_unified_2025.2.install_config ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/installer.bin'
+orbctl run -m xilinx-dev bash -lc 'INSTALL_CONFIG=/Users/<your-mac-user>/Projects/fpga-devbox/config/vitis_unified_2025.2.install_config /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
 ```
+
+Before installing, the guest script removes stale install configs (`~/install_config.txt`, `~/.Xilinx/install_config.txt`, `~/.xilinx-install-config.compiled.txt`), copies the active config to `~/install_config.txt`, filters unknown module names against the installer, and writes a compiled config for `xsetup`.
 
 Other overrides:
 
 ```bash
-orbctl run -m xilinx-dev env VITIS_VER=2025.2 ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/installer.bin'
-orbctl run -m xilinx-dev env INSTALL_ROOT=/tools/Xilinx ~/setup_fpga_devbox_machine.sh '/Users/<your-mac-user>/Downloads/installer.bin'
+orbctl run -m xilinx-dev bash -lc 'INSTALL_ROOT=/tools/Xilinx /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
+orbctl run -m xilinx-dev bash -lc 'VITIS_VER=2025.2 /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
+orbctl run -m xilinx-dev bash -lc 'XILINX_AMD_EMAIL=you@example.com XILINX_AMD_PASSWORD=secret /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
+orbctl run -m xilinx-dev bash -lc 'FORCE_AUTH_TOKEN_GEN=1 /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
+```
+
+To skip the repo config and use AMD's built-in edition defaults instead:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'INSTALL_CONFIG= /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/Users/<your-mac-user>/Downloads/installer.bin"'
 ```
 
 To regenerate the module list from your exact installer release:
@@ -260,7 +290,7 @@ To regenerate the module list from your exact installer release:
 orbctl run -m xilinx-dev bash -lc 'cd ~/xilinx-installer/extracted && ./xsetup -b ConfigGen -c ~/install_config.txt'
 ```
 
-Then rerun guest setup with `INSTALL_CONFIG=$HOME/install_config.txt`.
+Copy any lines you want into `config/vitis_unified_2025.2.install_config`, then rerun guest setup.
 
 ## Verification
 
@@ -335,12 +365,38 @@ The `.bin` download is a Makeself wrapper, not `xsetup`. The guest script extrac
 
 If you hit this error on an older checkout, pull the latest `setup_fpga_devbox_machine.sh` and rerun guest setup.
 
-### Installer fails with invalid `Modules` config (for example `Vitis Model Composer`)
+### Installer fails: generate an authentication token (`AuthTokenGen`)
 
-Module names change between AMD releases. Do not hand-edit stale `install_config.txt` files. Either rerun guest setup without `INSTALL_CONFIG` so the script uses AMD defaults, or regenerate a config with:
+The SDI `.bin` is a **web-installer client**. It downloads Vivado/Vitis payloads during batch install and requires a token at `~/.Xilinx/wi_authentication_key` (valid about 7 days).
+
+Generate it interactively inside the VM. OrbStack does not support Docker-style `-it`; use an interactive shell and run the setup script there:
 
 ```bash
-orbctl run -m xilinx-dev bash -lc 'cd ~/xilinx-installer/extracted && ./xsetup -b ConfigGen -c ~/install_config.txt'
+orbctl run -m xilinx-dev
+```
+
+Then inside the VM:
+
+```bash
+/Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/path/to/installer.bin"
+```
+
+The script will extract the installer, find the actual `xsetup`, prompt for your AMD account, and continue installation. Use the same email casing as your AMD account record.
+
+Or pass credentials when rerunning setup:
+
+```bash
+orbctl run -m xilinx-dev bash -lc 'XILINX_AMD_EMAIL=you@example.com XILINX_AMD_PASSWORD=secret /Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/path/to/installer.bin"'
+```
+
+If you use a **full offline `.tar.gz`** image instead of the SDI `.bin`, auth is not required.
+
+### Installer fails with invalid `Modules` config (for example `Vitis Model Composer`)
+
+Module names change between AMD releases. The guest script filters unknown module names, but the safest path is to edit `config/vitis_unified_2025.2.install_config` and rerun guest setup so the script refreshes `~/install_config.txt` from that source:
+
+```bash
+orbctl run -m xilinx-dev bash -lc '/Users/<your-mac-user>/Projects/fpga-devbox/setup_fpga_devbox_machine.sh "/path/to/installer.bin"'
 ```
 
 ### Wrong machine architecture (arm64 instead of amd64)

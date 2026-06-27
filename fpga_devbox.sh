@@ -8,14 +8,14 @@ ARG3="${3:-}"
 RDP_PORT="${RDP_PORT:-3389}"
 VITIS_VER="${VITIS_VER:-2025.2}"
 INSTALL_ROOT="${INSTALL_ROOT:-/tools/Xilinx}"
-HOSTNAME="${MACHINE}.orb.local"
+RDP_HOST="${MACHINE}.orb.local"
 RDP_FILE="$HOME/.orbstack-${MACHINE}.rdp"
 
 detect_rdp_app() {
   if [[ -d "/Applications/Windows App.app" ]]; then
-    echo "/Applications/Windows App.app"
+    echo "Windows App"
   elif [[ -d "/Applications/Microsoft Remote Desktop.app" ]]; then
-    echo "/Applications/Microsoft Remote Desktop.app"
+    echo "Microsoft Remote Desktop"
   fi
 }
 
@@ -46,6 +46,7 @@ USAGE
 }
 
 need_cmd orb
+need_cmd orbctl
 need_cmd open
 
 orb_machine() {
@@ -71,7 +72,7 @@ if ! orb list >/dev/null 2>&1; then
   orb start >/dev/null 2>&1 || true
 fi
 
-if ! orb list | awk '{print $1}' | grep -qx "$MACHINE"; then
+if ! orbctl list -q | grep -Fxq "$MACHINE"; then
   echo "Machine '$MACHINE' not found. Create it first with setup_fpga_devbox_host.sh" >&2
   exit 1
 fi
@@ -105,7 +106,7 @@ MSG
 fi
 
 cat > "$RDP_FILE" <<RDP
-full address:s:${HOSTNAME}:${RDP_PORT}
+full address:s:${RDP_HOST}:${RDP_PORT}
 prompt for credentials:i:1
 administrative session:i:0
 authentication level:i:2
@@ -133,7 +134,7 @@ MAC_RDP_APP="$(detect_rdp_app || true)"
 if [[ -n "$MAC_RDP_APP" ]]; then
   open -a "$MAC_RDP_APP" "$RDP_FILE"
 else
-  echo "No RDP client found (Windows App or Microsoft Remote Desktop); connect manually to ${HOSTNAME}:${RDP_PORT}" >&2
+  echo "No RDP client found (Windows App or Microsoft Remote Desktop); connect manually to ${RDP_HOST}:${RDP_PORT}" >&2
 fi
 
 sleep 2
@@ -143,13 +144,43 @@ case "$TOOL" in
     echo "Desktop opened for $MACHINE"
     ;;
   vivado)
-    WORKDIR="${ARG3:-$HOME}"
-    orb_machine bash -lc "mkdir -p \"$WORKDIR\" && source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh && cd \"$WORKDIR\" && nohup vivado >/tmp/vivado-gui.log 2>&1 &"
-    echo "Vivado launch requested in $MACHINE at $WORKDIR"
+    WORKDIR="$ARG3"
+    orb_machine bash -lc '
+      set -euo pipefail
+      workdir="${1:-$HOME}"
+      install_root="$2"
+      vitis_ver="$3"
+      settings="$install_root/Vitis/$vitis_ver/settings64.sh"
+      if [[ ! -f "$settings" ]]; then
+        echo "Xilinx settings file not found: $settings" >&2
+        echo "Finish guest setup before launching Vivado." >&2
+        exit 1
+      fi
+      mkdir -p "$workdir"
+      source "$settings"
+      cd "$workdir"
+      nohup vivado >/tmp/vivado-gui.log 2>&1 &
+    ' _ "$WORKDIR" "$INSTALL_ROOT" "$VITIS_VER"
+    echo "Vivado launch requested in $MACHINE at ${WORKDIR:-guest home}"
     ;;
   vitis)
-    WORKDIR="${ARG3:-$HOME/vitis-workspace}"
-    orb_machine bash -lc "mkdir -p \"$WORKDIR\" && source $INSTALL_ROOT/Vitis/$VITIS_VER/settings64.sh && cd \"$WORKDIR\" && nohup vitis -w \"$WORKDIR\" >/tmp/vitis-gui.log 2>&1 &"
-    echo "Vitis launch requested in $MACHINE with workspace $WORKDIR"
+    WORKDIR="$ARG3"
+    orb_machine bash -lc '
+      set -euo pipefail
+      workdir="${1:-$HOME/vitis-workspace}"
+      install_root="$2"
+      vitis_ver="$3"
+      settings="$install_root/Vitis/$vitis_ver/settings64.sh"
+      if [[ ! -f "$settings" ]]; then
+        echo "Xilinx settings file not found: $settings" >&2
+        echo "Finish guest setup before launching Vitis." >&2
+        exit 1
+      fi
+      mkdir -p "$workdir"
+      source "$settings"
+      cd "$workdir"
+      nohup vitis -w "$workdir" >/tmp/vitis-gui.log 2>&1 &
+    ' _ "$WORKDIR" "$INSTALL_ROOT" "$VITIS_VER"
+    echo "Vitis launch requested in $MACHINE with workspace ${WORKDIR:-guest ~/vitis-workspace}"
     ;;
 esac
