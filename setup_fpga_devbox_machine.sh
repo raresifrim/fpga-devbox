@@ -72,8 +72,48 @@ if ! grep -q 'unset DBUS_SESSION_BUS_ADDRESS' /etc/xrdp/startwm.sh; then
 fi
 
 sudo adduser xrdp ssl-cert || true
-sudo systemctl enable --now xrdp
+
+# OrbStack/LXC cannot verify forked PID files ("Inappropriate ioctl for device"),
+# which makes the stock Type=forking units time out after 90s. Run in foreground.
+sudo mkdir -p /etc/systemd/system/xrdp-sesman.service.d /etc/systemd/system/xrdp.service.d
+sudo tee /etc/systemd/system/xrdp-sesman.service.d/orbstack.conf >/dev/null <<'EOF'
+[Unit]
+BindsTo=
+StopWhenUnneeded=
+
+[Service]
+Type=simple
+PIDFile=
+ExecStart=
+ExecStart=/usr/sbin/xrdp-sesman -n
+EOF
+sudo tee /etc/systemd/system/xrdp.service.d/orbstack.conf >/dev/null <<'EOF'
+[Unit]
+Requires=
+
+[Service]
+Type=simple
+PIDFile=
+ExecStart=
+ExecStart=/usr/sbin/xrdp -n
+EOF
+sudo systemctl daemon-reload
+
+sudo mkdir -p /var/log
+sudo touch /var/log/xrdp.log /var/log/xrdp-sesman.log
+sudo chown xrdp:adm /var/log/xrdp.log
+sudo chown root:adm /var/log/xrdp-sesman.log
+sudo chmod 640 /var/log/xrdp.log /var/log/xrdp-sesman.log
+
+sudo systemctl enable xrdp-sesman xrdp
+sudo systemctl restart xrdp-sesman
 sudo systemctl restart xrdp
+
+if ! systemctl is-active --quiet xrdp-sesman || ! systemctl is-active --quiet xrdp; then
+  echo "XRDP failed to start. Check logs with:" >&2
+  echo "  journalctl -u xrdp-sesman -u xrdp --no-pager" >&2
+  exit 1
+fi
 
 sudo mkdir -p "$INSTALL_ROOT"
 sudo chown -R "$USER":"$USER" "$INSTALL_ROOT"

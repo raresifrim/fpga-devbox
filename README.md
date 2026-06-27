@@ -263,9 +263,19 @@ For Vivado and Vitis, XRDP is generally the better fit because it gives a comple
 
 ### XRDP is not active
 
+On OrbStack, the stock `xrdp` systemd units can fail with `dependency job for xrdp.service failed` because PID tracking for `Type=forking` services does not work in the container environment. The guest setup script applies an OrbStack-specific override that runs `xrdp` and `xrdp-sesman` in foreground mode.
+
+If XRDP still fails, check logs and service state:
+
 ```bash
-orbctl run -m xilinx-dev sudo systemctl restart xrdp
-orbctl run -m xilinx-dev systemctl status xrdp --no-pager
+orbctl run -m xilinx-dev journalctl -u xrdp-sesman -u xrdp --no-pager
+orbctl run -m xilinx-dev systemctl status xrdp-sesman xrdp --no-pager
+```
+
+Restart after pulling the latest setup script:
+
+```bash
+orbctl run -m xilinx-dev sudo systemctl restart xrdp-sesman xrdp
 ```
 
 ### Vivado or Vitis fails to start
