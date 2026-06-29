@@ -255,6 +255,7 @@ After setup, the machine is intended to provide:
 - `vitis`
 - `xrdp`
 - `xfce4`
+- `tio` (serial terminal; see the Digilent UART note in Troubleshooting)
 - The full [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) (extracted to `~/oss-cad-suite` and sourced from `~/.bashrc`), which bundles open-source tools such as `yosys`, `nextpnr`, `verilator`, `iverilog`/`vvp`, `gtkwave`, and more.
 
 `verilator` and `iverilog` are no longer installed via `apt`; they come from the OSS CAD Suite. Because the suite is sourced in `~/.bashrc`, its tools are available in interactive shells inside the machine.
@@ -424,6 +425,50 @@ orbctl run -m xilinx-dev bash -lc 'mkdir -p ~/.Xilinx/Vivado && echo "catch {con
 ```
 
 If a crash with the same `libudev` signature somehow persists, run synthesis/implementation in-process (`synth_design`, `opt_design`, `place_design`, `route_design`, `write_bitstream`) instead of via `launch_runs`.
+
+### JTAG and Serial/UART: the two OrbStack USB modes
+
+Most Digilent boards (Nexys, Arty, Basys3, Zybo, …) use a **single FT2232H** (`0403:6010`) for both JTAG and UART: **USB interface 0 is JTAG** (driven by Vivado via libusb/MPSSE; it gets no tty) and **USB interface 1 is the UART**. The single most important thing to understand is that **OrbStack can attach this device in two completely different modes**, and what works depends entirely on which one you picked:
+
+| Mode | How to enable | `lsusb` shows `0403:6010`? | What the device looks like in the VM | JTAG (Vivado programming) | UART (serial terminal) |
+| --- | --- | --- | --- | --- | --- |
+| **Forwarded** | `orb serial` (serial bridge) | **No** | only `/dev/cu.usbserial-<SERIAL><iface>` and `/dev/tty.usbserial-<SERIAL><iface>` (e.g. `…0` = JTAG channel, `…1` = UART) | **Impossible** — a serial bridge cannot carry MPSSE | **Works** (open the `…1` node) |
+| **Passthrough / dedicated** | attach as a dedicated USB device | **Yes** | raw USB device bound by the kernel `ftdi_sio` driver; UART is `/dev/ttyUSB<N>` | **Works** (after interface 0 is free) | **Works** (`/dev/ttyUSB*`) |
+
+**For JTAG you MUST use passthrough.** Forwarded (`orb serial`) mode is only a serial bridge, so it can never do JTAG — libusb/MPSSE needs the raw USB device. If you only need the UART, forwarded mode is perfectly fine (and the node is already accessible).
+
+**In passthrough, `ftdi_sio` may block JTAG.** On each enumeration the kernel binds `ftdi_sio` inconsistently: sometimes only to interface 1 (so interface 0 is already free and JTAG works), sometimes to **both** interfaces (so interface 0 is bound and JTAG is blocked). When interface 0 is bound, Vivado's hw_server cannot claim it via libusb.
+
+**Guest-side fix: the `fpga-usb-setup` helper.** The setup script installs `~/bin/fpga-usb-setup` (and the daily launcher regenerates it). It is idempotent and best-effort, and for each FT2232H it finds in passthrough mode it:
+
+1. **unbinds `ftdi_sio` from interface 0** via sysfs (`…/ftdi_sio/<id>:1.0` → `unbind`), leaving interface 0 driverless so Vivado's libusb can claim it for JTAG,
+2. makes sure **interface 1 is bound** so a `ttyUSB` node exists, then `sudo chmod 666` that node so the UART is user-accessible, and
+3. prints a summary (interface 0 free? UART node + perms).
+
+If no raw `0403:6010` device is present (e.g. you are in forwarded mode), it prints a hint and exits `0` — it never fails the launch. **The launcher runs it best-effort before opening Vivado/Vitis**, so JTAG and the UART are usually ready automatically; you can also run `fpga-usb-setup` by hand anytime.
+
+**Opening the UART in either mode: the `fpga-uart` helper.** `~/bin/fpga-uart` is mode-aware. With no explicit device it tries, in order: an explicit `$1` (if given), then the passthrough candidates (`/dev/serial/by-id/*Digilent*-if01-port0`, any `*-if01-port0`, then the highest-numbered `/dev/ttyUSB*`), then the forwarded candidate (the interface-1 serial bridge — prefer `/dev/cu.usbserial-*` over `/dev/tty.usbserial-*`, picking the higher trailing interface digit). It only `chmod 666`s a resolved `/dev/ttyUSB*` node (the `cu.*`/`tty.*` bridge nodes are already `dialout 0660` and accessible), then opens `tio` (which auto-reconnects across the next program-time re-enumeration).
+
+```bash
+fpga-uart                 # auto-detect the UART (either mode), 115200 baud
+fpga-uart "" 9600         # auto-detect, override baud
+fpga-uart /dev/ttyUSB1 115200          # explicit passthrough node
+fpga-uart /dev/cu.usbserial-<SERIAL>1  # explicit forwarded bridge node
+```
+
+If it reports **no UART found**: make sure the board is connected; if you only need the UART, forwarded (`orb serial`) mode is fine; if you also need Vivado JTAG, switch to passthrough and run `fpga-usb-setup`; and in all cases **close Vivado Hardware Manager** (it holds the whole FT2232H chip) before opening the UART, then retry.
+
+**Why this is not done with udev.** OrbStack does **not** drive `systemd-udevd` on device creation/re-enumeration, so under OrbStack:
+
+- `/dev/serial/by-id/*` symlinks generally **do not exist**, and udev rules (including the Xilinx `MODE:="666"` rule) **do not auto-apply** — which is why perms are fixed with a direct `chmod` instead.
+- **Never run `udevadm settle`** — it hangs for ~80s and never returns.
+- **Do not run a full `udevadm trigger --action=add`** against the USB subsystem: the installed Xilinx rule `/etc/udev/rules.d/52-xilinx-ftdi-usb.rules` has a `PROGRAM` that unbinds `ftdi_sio` from **both** interfaces, which would **kill the UART**. `fpga-usb-setup` therefore uses direct sysfs bind/unbind, which is reliable and udev-independent.
+
+**Alternative for UART only: run the serial terminal from the macOS host.** This sidesteps the guest entirely, because the FTDI UART node on macOS is already `0666`. Pick the **interface-1 node** — the `/dev/cu.usbserial-*` / `/dev/tty.usbserial-*` entry whose name ends in the higher interface index (e.g. `…1`); the `…0` entry is the JTAG channel. **Close Vivado Hardware Manager first**, then on the Mac:
+
+```bash
+tio /dev/tty.usbserial-<SERIAL>1   # or: screen /dev/cu.usbserial-<SERIAL>1 115200
+```
 
 ### Installer path is not visible inside Linux
 
