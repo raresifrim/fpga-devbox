@@ -56,6 +56,7 @@ USAGE
 [[ "$INSTALLER_PATH" == /* ]] || { echo "Installer path must be absolute: $INSTALLER_PATH" >&2; exit 1; }
 INSTALLER_PATH="$(cd "$(dirname "$INSTALLER_PATH")" && pwd)/$(basename "$INSTALLER_PATH")"
 [[ -f "$MACHINE_SETUP_LOCAL" ]] || { echo "Machine setup script not found: $MACHINE_SETUP_LOCAL" >&2; exit 1; }
+REPO_DIR="$(cd "$(dirname "$MACHINE_SETUP_LOCAL")" && pwd)"
 
 need_cmd brew
 need_cmd osascript
@@ -132,11 +133,14 @@ Host setup complete.
 Machine: $MACHINE
 Architecture: $(machine_arch)
 Installer on host: $INSTALLER_PATH
+Repo directory on host: $REPO_DIR
 Machine setup script uploaded as: ~/setup_fpga_devbox_machine.sh
 
 Next step:
-  orbctl run -m $MACHINE ~/setup_fpga_devbox_machine.sh '$INSTALLER_PATH'
+  orbctl run -m $MACHINE ~/setup_fpga_devbox_machine.sh '$INSTALLER_PATH' '$REPO_DIR'
 
 The guest script copies the installer from that macOS path into the VM before installing.
+The repo dir (2nd argument) is where the ~/bin helper scripts live (repo bin/);
+the guest reads it at the same absolute macOS path via OrbStack's virtiofs mount.
 After machine setup finishes, use fpga_devbox.sh from macOS to open the desktop or launch Vivado/Vitis.
 MSG

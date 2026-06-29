@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "$HOME/bin/fpga-launch-gui" vitis "${1:-}"
